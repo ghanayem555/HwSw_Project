@@ -182,13 +182,11 @@ the real N_ITER=20000). Contains:
     then the 5-body position-update pass, per iteration
   - nbody_accelerator: top-level module wrapping the above behind a
     simple memory-mapped register interface
-Numeric format: IEEE-754 float32. An earlier Q16.16 fixed-point version of
-this design was found (by design review) to be unable to represent this
-workload at all - 8 of the 10 pairwise force terms underflow to exactly
-zero at Q16.16's ~1.5e-5 resolution. Float32 was chosen over float64
-because it was the version actually debugged to a verified-correct state
-(see the "What Was Actually Broken" section of NBODY_FP32_ACCELERATOR.md);
-it also roughly halves fp_sqrt/fp_div's iterative latency versus float64.
+Numeric format: IEEE-754 float32. A Q16.16 fixed-point version of this idea
+was found (by design review) to be unable to represent this workload at
+all - 8 of the 10 pairwise force terms underflow to exactly zero at
+Q16.16's ~1.5e-5 resolution. Float32 has none of that problem and keeps
+the benchmark's energy nearly conserved (see NBODY_FP32_ACCELERATOR.md).
 This is a workload-specialized accelerator, not a general-purpose FPU:
 fp_sqrt/fp_div assume non-negative operands, which always holds for d^2
 and d^2*sqrt(d^2) in this physics computation; no NaN/Inf/denormal

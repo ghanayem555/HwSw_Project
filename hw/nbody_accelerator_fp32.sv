@@ -1,19 +1,16 @@
 // ============================================================================
-// nbody_accelerator_fp32.sv  —  IEEE-754 float32 version
+// nbody_accelerator_fp32.sv  —  IEEE-754 float32 Pairwise Gravity Accelerator
 //
-// Derived from nbody_accelerator.sv (float64) by halving every field width
-// per the IEEE-754 float32 layout: 1 sign + 8 exponent (bias 127) + 23
-// mantissa bits (24-bit significand with implicit leading 1), vs float64's
-// 1 + 11 (bias 1023) + 52 (53-bit significand).
+// Numeric format: IEEE-754 float32 (1 sign + 8 exponent, bias 127 + 23
+// mantissa bits, 24-bit significand with implicit leading 1). Chosen over a
+// fixed-point (Q16.16) design because Q16.16 cannot represent this workload:
+// its ~1.5e-5 resolution underflows 8 of the 10 pairwise force terms to
+// exactly zero. Float32's ~7 decimal digits of precision keeps the
+// benchmark's energy nearly conserved (see NBODY_FP32_ACCELERATOR.md).
 //
-// Why float32: precision (~7 decimal digits) was already validated as
-// sufficient for this workload (see hardware.md — energy nearly conserved).
-// Benefit: fp_sqrt/fp_div latency roughly halves (24-bit significand instead
-// of 53-bit), and every register/bus/multiplier shrinks too.
-//
-// Same numeric simplification as the float64 version: fp_sqrt/fp_div assume
-// non-negative, positive-only, normal finite operands (always true for d^2
-// and d^2*sqrt(d^2) in this workload). No NaN/Inf/denormal handling.
+// Numeric simplification: fp_sqrt/fp_div assume non-negative, positive-only,
+// normal finite operands (always true for d^2 and d^2*sqrt(d^2) in this
+// workload). No NaN/Inf/denormal handling.
 //
 // Register map (4-byte aligned, 32-bit bus):
 //   0x00  CONTROL   bit0=START
@@ -25,9 +22,8 @@
 //   the region, 35*4=140=0x8C, not its last address). Starting at 0x40, the
 //   last word (index 34) is actually at 0x40+34*4=0xC8. The old 0x8C bound
 //   silently dropped every MMIO write/read at index >= 20 (bodies 3 and 4,
-//   i.e. uranus and neptune, never loaded or read back correctly) - the
-//   exact same bug hardware.md flagged for the original Q16.16 design,
-//   reintroduced here when this file was derived from the float64 version.
+//   i.e. uranus and neptune, never loaded or read back correctly). Found and
+//   fixed via tb_nbody_full_fp32.sv (see NBODY_FP32_ACCELERATOR.md).
 // ============================================================================
 
 
@@ -382,9 +378,8 @@ endmodule
 
 
 // ----------------------------------------------------------------------------
-// nbody_core: FSM and datapath — IEEE-754 float32. Structurally identical
-// to the float64 version (same 21 states, same control flow); every
-// scratch register and math-unit port is just [31:0] instead of [63:0].
+// nbody_core: FSM and datapath — IEEE-754 float32. 21-state control FSM;
+// every scratch register and math-unit port is [31:0].
 // ----------------------------------------------------------------------------
 module nbody_core (
     input  logic        clk,

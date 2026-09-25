@@ -3,11 +3,7 @@
 This is the project's hardware acceleration proposal for the `nbody`
 benchmark: an IEEE-754 **float32** design (`hw/nbody_accelerator_fp32.sv`),
 debugged and verified end-to-end with real RTL simulation, not just read and
-reasoned about. An earlier float64 version of this design was tried first
-and found to have its own unfixed arithmetic bugs at the unit-test level; it
-was dropped rather than carried forward broken (see Section 8), and this
-document and this repository describe only the float32 design that replaced
-it.
+reasoned about (see Section 5).
 
 Everything below reflects the actual, current state of
 `hw/nbody_accelerator_fp32.sv` after the two bug fixes described in
@@ -21,8 +17,7 @@ A memory-mapped hardware accelerator that runs the *entire* `advance()` inner
 loop of the pyperformance `nbody` benchmark — the 10-pair gravitational
 force update plus 5-body position update, repeated for however many
 iterations the host requests — autonomously in hardware, between two MMIO
-round trips (write state + trigger, then read result). This is the same
-architectural idea as the original float64 proposal in `report_nbody.txt`:
+round trips (write state + trigger, then read result). The core idea:
 the benchmark's cost is ~1.5M tiny interpreter-level operations, not one
 expensive computation, so the accelerator's value comes from removing the
 CPU/interpreter from the loop entirely, not from speeding up one arithmetic
@@ -34,25 +29,24 @@ Every value (positions, velocities, masses) is a standard 32-bit IEEE-754
 single-precision float: 1 sign bit, 8 exponent bits (bias 127), 23 mantissa
 bits (24-bit significand with the implicit leading 1).
 
-Float32 was chosen over an earlier Q16.16 fixed-point design because Q16.16
-cannot represent this workload at all: a design review found that 8 of the
-10 pairwise force terms underflow to exactly zero in Q16.16 (its ~1.5e-5
+Float32 was chosen over a fixed-point (Q16.16) design because Q16.16 cannot
+represent this workload at all: a design review found that 8 of the 10
+pairwise force terms underflow to exactly zero in Q16.16 (its ~1.5e-5
 resolution can't hold force magnitudes around 4e-7), and some intermediate
 values overflow Q16.16's ±32768 range in the other direction. Float32 has
-none of that problem and was already checked in that same review to keep
-the benchmark's energy nearly conserved. It was
-chosen over float64 specifically because it halves `fp_sqrt`/`fp_div`'s
-iterative latency (24-bit significand to converge instead of 53-bit) and
-because — as this document demonstrates — it's the version that was actually
-fixed and confirmed working; the float64 arithmetic units have their own,
-different, currently-unfixed bugs (see the project's earlier debugging notes
-for detail — out of scope here since the project has moved on to float32).
+none of that problem, and was already checked in that same review to keep
+the benchmark's energy nearly conserved - while being far cheaper in
+hardware than a wider floating-point format, since the iterative `fp_sqrt`/
+`fp_div` units' latency scales with the significand width they need to
+converge (24 bits here).
 
 Precision cost: float32 has ~7 decimal digits of precision, versus Python's
-float64 (~16 digits). The hardware also **truncates** every result instead
-of implementing IEEE round-to-nearest, which adds up to another ~1 ULP of
-error per operation. Section 6 quantifies exactly how this compounds over
-the benchmark's 20,000 iterations.
+native float64 (~16 digits) - the benchmark's own reference implementation
+runs in float64, so that's the ground truth the hardware's output is
+checked against (Section 6). The hardware also **truncates** every result
+instead of implementing IEEE round-to-nearest, which adds up to another ~1
+ULP of error per operation. Section 6 quantifies exactly how this compounds
+over the benchmark's 20,000 iterations.
 
 ## 3. Interfaces, register map
 
@@ -85,10 +79,10 @@ Block diagram: `hw/nbody_block_diagram.svg`.
 - **`fp_mul`** — combinational float32 multiply. 0-cycle latency.
 - **`fp_add`** — combinational float32 add/subtract (subtraction done by
   flipping the sign bit of the second operand before calling this). Includes
-  a from-scratch leading-zero-count normalization step with an explicit
-  `lz_found` early-exit flag — this file's version already had that fix
-  applied (the float64 version's equivalent loop does not, and is broken;
-  see the file's own "BUG FIX" comment above the loop). 0-cycle latency.
+  a leading-zero-count normalization step with an explicit `lz_found`
+  early-exit flag, needed so the loop stops at the first (highest) set bit
+  instead of the last one it scans (see the file's own "BUG FIX" comment
+  above the loop). 0-cycle latency.
 - **`fp_sqrt`** — iterative non-restoring digit-recurrence square root.
   25-cycle latency (1 setup + 24 bit-pair iterations). Assumes non-negative
   input (always true for `d²` in this workload).
@@ -113,10 +107,10 @@ Block diagram: `hw/nbody_block_diagram.svg`.
   `CONTROL`/`STATUS`/`DT`/`N_ITER` registers, and the sticky-`DONE`/`irq`
   logic.
 
-Structurally this file is a direct derivation of `nbody_accelerator.sv`
-(float64) — same 21 states, same control flow, every register and math-unit
-port just halved from 64 to 32 bits. That shared ancestry is exactly why it
-inherited two of that file's bugs (Section 5).
+Structurally, `nbody_core` is a straightforward 21-state FSM: load both
+bodies, compute the pairwise force, write both velocities back, repeat for
+all 10 pairs, then update all 5 positions. Two real bugs in that structure
+were found and fixed via simulation - see Section 5.
 
 ## 5. What Was Actually Broken, and What Was Fixed
 
@@ -140,11 +134,9 @@ if (mmio_addr >= 8'h40 && mmio_addr <= 8'h8C) begin ...
 Starting at `0x40`, word index 34 (neptune's mass) is actually at
 `0x40 + 34*4 = 0xC8`. The old bound silently dropped every MMIO read/write
 at word index ≥ 20 — bodies 3 and 4 (uranus, neptune) never loaded or read
-back at all. This is the *exact same bug* an earlier design review had
-already flagged and fixed for the original Q16.16 design; it was
-reintroduced independently when this file was derived from the (separately)
-fixed float64 file
-afterward, and never re-checked.
+back at all. This is the same class of off-by-one an earlier design review
+had already flagged for a prior fixed-point (Q16.16) version of this idea -
+reintroduced here and never re-checked until this pass.
 
 **Fix:** changed both occurrences of `8'h8C` to `8'hC8` in the address
 decode (`nbody_accelerator`'s write and read paths), and corrected the two
@@ -326,8 +318,8 @@ Given that, **the honest estimate is a genuine, if modest, win: roughly a
 19% reduction in runtime versus the already-optimized software, or about
 46% versus the unoptimized original** — for a single-shared-datapath design
 (one `fp_mul`/`fp_sqrt`/`fp_div` time-multiplexed across all 10 pairs per
-iteration, no parallelism). As with the original float64 proposal, most of
-the accelerator's own time is spent waiting on the iterative `fp_sqrt`
+iteration, no parallelism). Most of the accelerator's own time is spent
+waiting on the iterative `fp_sqrt`
 (25 cycles) and `fp_div` (49 cycles) units — the same area/power vs.
 latency trade-off applies here: N-way parallel pair-processing datapaths
 would cut that dominant cost roughly proportionally, at roughly N× the area
@@ -354,12 +346,6 @@ measured in `report_nbody.txt` §3) did not pay off at this scale.
   velocities, masses, and all intermediate products/roots/quotients) is
   always a normal, finite, and for `fp_sqrt`/`fp_div`'s inputs, non-negative
   number.
-- **float64 was abandoned, not just deprioritized:** an earlier IEEE-754
-  float64 version of this design was unit-tested with a similar pass and
-  found to have its own, different, unfixed bugs in `fp_add`/`fp_sqrt`/
-  `fp_div`. Rather than carrying a known-broken design in this repository,
-  it was dropped entirely; the float32 file described in this document is
-  the project's one, verified hardware proposal.
 
 ## 9. Reproducing this
 

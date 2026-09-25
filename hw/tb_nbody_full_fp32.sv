@@ -1,7 +1,5 @@
 // ============================================================================
-// tb_nbody_full_fp32.sv — full-system testbench for the float32 variant
-// (hw/nbody_accelerator_fp32.sv). See tb_nbody_full.sv for the float64
-// version; this mirrors it with 32-bit MMIO/register widths.
+// tb_nbody_full_fp32.sv — full-system testbench for nbody_accelerator_fp32.sv
 //
 // Run:
 //   iverilog -g2012 -o sim_nbody_full32 tb_nbody_full_fp32.sv nbody_accelerator_fp32.sv
